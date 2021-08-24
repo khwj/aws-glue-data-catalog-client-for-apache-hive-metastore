@@ -42,6 +42,7 @@ import org.apache.hadoop.hive.metastore.TableType;
 import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.api.AggrStats;
 import org.apache.hadoop.hive.metastore.api.ColumnStatisticsObj;
+import org.apache.hadoop.hive.metastore.api.CompactionResponse;
 import org.apache.hadoop.hive.metastore.api.CompactionType;
 import org.apache.hadoop.hive.metastore.api.ConfigValSecurityException;
 import org.apache.hadoop.hive.metastore.api.CurrentNotificationEventId;
@@ -74,6 +75,8 @@ import org.apache.hadoop.hive.metastore.api.NoSuchTxnException;
 import org.apache.hadoop.hive.metastore.api.NotificationEventResponse;
 import org.apache.hadoop.hive.metastore.api.OpenTxnsResponse;
 import org.apache.hadoop.hive.metastore.api.PartitionEventType;
+import org.apache.hadoop.hive.metastore.api.PartitionValuesRequest;
+import org.apache.hadoop.hive.metastore.api.PartitionValuesResponse;
 import org.apache.hadoop.hive.metastore.api.PrimaryKeysRequest;
 import org.apache.hadoop.hive.metastore.api.SQLForeignKey;
 import org.apache.hadoop.hive.metastore.api.SQLPrimaryKey;
@@ -87,7 +90,6 @@ import org.apache.hadoop.hive.metastore.api.UnknownDBException;
 import org.apache.hadoop.hive.metastore.api.UnknownPartitionException;
 import org.apache.hadoop.hive.metastore.api.UnknownTableException;
 import org.apache.hadoop.hive.metastore.api.hive_metastoreConstants;
-import org.apache.hadoop.hive.metastore.api.CompactionResponse;
 import org.apache.hadoop.hive.metastore.partition.spec.PartitionSpecProxy;
 import org.apache.log4j.Logger;
 import org.apache.thrift.TException;
@@ -124,7 +126,7 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
   private final Warehouse wh;
   private final GlueMetastoreClientDelegate glueMetastoreClientDelegate;
   private final String catalogId;
-  
+
   private static final int BATCH_DELETE_PARTITIONS_PAGE_SIZE = 25;
   private static final int BATCH_DELETE_PARTITIONS_THREADS_COUNT = 5;
   static final String BATCH_DELETE_PARTITIONS_THREAD_POOL_NAME_FORMAT = "batch-delete-partitions-%d";
@@ -191,7 +193,7 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
       this.catalogId = catalogId;
       return this;
     }
-    
+
     public AWSCatalogMetastoreClient build() throws MetaException {
       return new AWSCatalogMetastoreClient(this);
     }
@@ -210,7 +212,7 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
     } else {
       this.wh = new Warehouse(conf);
     }
-    
+
     if (builder.catalogId != null) {
     	this.catalogId = builder.catalogId;
     } else {
@@ -237,7 +239,7 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
   }
 
   private boolean doesDefaultDBExist() throws MetaException {
-    
+
     try {
       GetDatabaseRequest getDatabaseRequest = new GetDatabaseRequest().withName(DEFAULT_DATABASE_NAME).withCatalogId(
           catalogId);
@@ -356,7 +358,7 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
   @Override
   public void alterFunction(String dbName, String functionName, org.apache.hadoop.hive.metastore.api.Function newFunction) throws InvalidObjectException,
         MetaException, TException {
-    glueMetastoreClientDelegate.alterFunction(dbName, functionName, newFunction); 
+    glueMetastoreClientDelegate.alterFunction(dbName, functionName, newFunction);
   }
 
   @Override
@@ -974,7 +976,7 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
       for (String databaseName : databaseNames) {
         GetUserDefinedFunctionsRequest getUserDefinedFunctionsRequest = new GetUserDefinedFunctionsRequest()
             .withDatabaseName(databaseName).withPattern(".*").withCatalogId(catalogId);
-        
+
         List<UserDefinedFunction> catalogFunctions = glueClient.getUserDefinedFunctions(
             getUserDefinedFunctionsRequest)
             .getUserDefinedFunctions();
@@ -1230,6 +1232,11 @@ public class AWSCatalogMetastoreClient implements IMetaStoreClient {
     // In current hive implementation, it ignores fields "max"
     // https://github.com/apache/hive/blob/rel/release-2.3.0/metastore/src/java/org/apache/hadoop/hive/metastore/ObjectStore.java#L3867-L3899
     return glueMetastoreClientDelegate.listIndexes(db_name, tbl_name);
+  }
+
+  @Override
+  public PartitionValuesResponse listPartitionValues(PartitionValuesRequest partitionValuesRequest) throws MetaException, TException, NoSuchObjectException {
+    throw new UnsupportedOperationException("listPartitionValues is not supported");
   }
 
   @Override
