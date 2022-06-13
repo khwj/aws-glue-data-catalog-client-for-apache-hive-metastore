@@ -1,0 +1,191 @@
+name: Build and publish artifacts
+
+on:
+  push:
+    branches:
+    - '*'
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    env:
+      SPARK_VERSION: 3.2.1
+      SPARK_HADOOP_PROFILE: hadoop-3.2
+      HADOOP_VERSION: 3.3.1
+      HIVE_BRANCH: branch-2.3
+      PATCHED_HIVE_VERSION: 2.3.9
+      GLUE_DATA_CATALOG_CLIENT_BRANCH: spark3
+      AWS_SDK_VERSION: 1.11.901
+      CONTAINER_REGISTRY: ghcr.io
+    steps:
+    - name: Set java
+      uses: actions/setup-java@v3
+      with:
+        distribution: adopt
+        java-version: '8'
+    - name: Log in to the Container registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ env.CONTAINER_REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Checkout Apache Hive
+      uses: actions/checkout@v3
+      with:
+        repository: apache/hive
+        path: ./hive
+        ref: ${{ env.HIVE_BRANCH }}
+    - name: Patch Apache Hive with HIVE-12679
+      working-directory: ./hive
+      run: |
+        curl -OL https://issues.apache.org/jira/secure/attachment/12958418/HIVE-12679.branch-2.3.patch
+        patch -p0 <HIVE-12679.branch-2.3.patch
+    - name: Fix Hive dependencies
+      working-directory: ./hive
+      run: |
+        cat <<EOF > settings.xml
+        <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0" 
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+            xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+          <profiles>
+            <profile>
+              <id>main</id>
+              <activation>
+                <activeByDefault>true</activeByDefault>
+              </activation>
+              <repositories>
+                <repository>
+                  <id>pentaho-public</id>
+                  <name>Pentaho Public</name>
+                  <url>https://repo.orl.eng.hitachivantara.com/artifactory/pnt-mvn/</url>
+                </repository>
+              </repositories>
+            </profile>
+          </profiles>
+          <activeProfiles>
+            <activeProfile>main</activeProfile>
+          </activeProfiles>
+        </settings>
+        EOF
+        # https://stackoverflow.com/a/61974160
+        get_extra_deps() {
+          cat <<EOF
+              <dependency>
+                  <groupId>commons-dbcp</groupId>
+                  <artifactId>commons-dbcp</artifactId>
+                  <version>1.4</version>
+              </dependency>
+        EOF
+        }
+        extra_deps=$(get_extra_deps)
+        extra_deps=${extra_deps//$'\n'/\\$'\n'}
+        sed -i "s|<dependencies>|<dependencies>\n${extra_deps}|" "./jdbc-handler/pom.xml"
+
+    - name: Build and install Hive locally
+      working-directory: ./hive
+      run: |
+        mvn versions:set -DnewVersion=$PATCHED_HIVE_VERSION
+        mvn -DskipTests -Dapache-directory-server.version=1.5.7 --settings=settings.xml clean install
+
+    - name: Upload Apache Hive (with patch) artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: hive-${{ env.PATCHED_HIVE_VERSION }}-bin-jars
+        path: hive/**/*.jar
+
+    - name: Checkout Glue Data Catalog Client
+      uses: actions/checkout@v3
+      with:
+        repository: khwj/aws-glue-data-catalog-client-for-apache-hive-metastore
+        path: ./glue-data-catalog-client
+        ref: ${{ env.GLUE_DATA_CATALOG_CLIENT_BRANCH }}
+
+    - name: Build Glue Data Catalog Client
+      working-directory: ./glue-data-catalog-client
+      run: |
+        cat <<EOF > settings.xml
+        <settings xmlns="http://maven.apache.org/SETTINGS/1.0.0" 
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+            xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+          <profiles>
+            <profile>
+              <id>main</id>
+              <activation>
+                <activeByDefault>true</activeByDefault>
+              </activation>
+              <repositories>
+                <repository>
+                  <id>pentaho-public</id>
+                  <name>Pentaho Public</name>
+                  <url>https://repo.orl.eng.hitachivantara.com/artifactory/pnt-mvn/</url>
+                </repository>
+              </repositories>
+            </profile>
+          </profiles>
+          <activeProfiles>
+            <activeProfile>main</activeProfile>
+          </activeProfiles>
+        </settings>
+        EOF
+        set -ex
+        mvn clean install package \
+          -DskipTests \
+          -Dhive2.version=${PATCHED_HIVE_VERSION} \
+          -Dspark-hive.version=${PATCHED_HIVE_VERSION} \
+          -Dhadoop.version=${HADOOP_VERSION} \
+          -Daws.sdk.version=${AWS_SDK_VERSION} \
+          --settings=settings.xml
+
+    - name: Upload Glue Data Catalog Client Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: glue-data-catalog-client-jars
+        path: |
+          glue-data-catalog-client/aws-glue-datacatalog-*/**/*.jar
+          glue-data-catalog-client/shims/**/*.jar
+          !glue-data-catalog-client/aws-glue-datacatalog-*/**/*-tests.jar
+
+    - name: Checkout Apache Spark
+      uses: actions/checkout@v3
+      with:
+        repository: apache/spark
+        path: ./spark
+        ref: refs/tags/v${{ env.SPARK_VERSION }}
+
+    - name: Build Apache Spark
+      working-directory: ./spark
+      run: |
+        shopt -s globstar
+        export MAVEN_OPTS="-Xmx2g -XX:ReservedCodeCacheSize=1g -Xss256m"
+        ./dev/make-distribution.sh --name spark-${SPARK_VERSION}-bin-${SPARK_HADOOP_PROFILE//-/}-glue \
+          --pip \
+          -P${SPARK_HADOOP_PROFILE} \
+          -Dhadoop.version=${HADOOP_VERSION} \
+          -Phive \
+          -Phive-thriftserver \
+          -Dhive.version=${PATCHED_HIVE_VERSION} \
+          -Pkubernetes
+        cp ../glue-data-catalog-client/aws-glue-datacatalog-*/**/*.jar dist/jars/
+        cp ../glue-data-catalog-client/shims/**/**/*.jar dist/jars/
+        # Remove duplicated jars
+        rm -rf dist/jars/aws-glue-datacatalog-*-tests.jar
+        rm -rf dist/jars/httpcore-4.4.1.jar
+        rm -rf dist/jars/httpclient-4.5.5.jar
+
+    - name: Upload Apache Spark Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: spark-${{ env.SPARK_VERSION }}-bin-${{ env.SPARK_HADOOP_PROFILE }}-glue
+        path: spark/dist/**
+
+    - name: Build and publish Spark container images
+      working-directory: ./spark/dist
+      run: |
+        set -ex
+        IMAGE_REPO=${CONTAINER_REGISTRY}/${GITHUB_REPOSITORY_OWNER}
+        IMAGE_TAG=${SPARK_VERSION}-${SPARK_HADOOP_PROFILE//-/}-glue
+        ./bin/docker-image-tool.sh -r ${IMAGE_REPO} -t ${IMAGE_TAG} build
+        ./bin/docker-image-tool.sh -r ${IMAGE_REPO} -t ${IMAGE_TAG} push
+        ./bin/docker-image-tool.sh -p kubernetes/dockerfiles/spark/bindings/python/Dockerfile -r ${IMAGE_REPO} -t ${IMAGE_TAG} build
+        ./bin/docker-image-tool.sh -p kubernetes/dockerfiles/spark/bindings/python/Dockerfile -r ${IMAGE_REPO} -t ${IMAGE_TAG} push
